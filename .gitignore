@@ -2,3 +2,4 @@ docs_laravel
 venv
 .gitignore
 .env
+/*.png

@@ -42,7 +42,7 @@ CÓDIGO CON NÚMEROS DE LÍNEA:
 {{CODE}}`);
   const [isRunning, setIsRunning] = useState(false);
   const [progress, setProgress] = useState(0);
-  const [startTime, setStartTime] = useState<number | null>(null);
+  const startTimeRef = useRef<number | null>(null);
   const [eta, setEta] = useState<string>("");
   const [status, setStatus] = useState("Listo para comenzar");
   const [logs, setLogs] = useState<string[]>([]);
@@ -143,7 +143,7 @@ CÓDIGO CON NÚMEROS DE LÍNEA:
     
     setIsRunning(true);
     setProgress(0);
-    setStartTime(null);
+    startTimeRef.current = null;
     setEta("");
     setLogs([]);
     setFinalFile(null);
@@ -160,8 +160,8 @@ CÓDIGO CON NÚMEROS DE LÍNEA:
       
       if (data.progress) {
         setProgress(data.progress);
-        if (data.progress > 5 && startTime) {
-          const elapsed = Date.now() - startTime;
+        if (data.progress > 1 && startTimeRef.current) {
+          const elapsed = Date.now() - startTimeRef.current;
           const totalEstimated = (elapsed / data.progress) * 100;
           const remaining = totalEstimated - elapsed;
           if (remaining > 0) {
@@ -173,7 +173,7 @@ CÓDIGO CON NÚMEROS DE LÍNEA:
       }
 
       if (data.total_bloques) {
-        setStartTime(Date.now());
+        startTimeRef.current = Date.now();
       }
       
       if (data.streaming && data.log) {
@@ -460,9 +460,10 @@ CÓDIGO CON NÚMEROS DE LÍNEA:
                 </div>
                 <div className="flex flex-col items-end gap-1">
                   <div className="text-4xl font-black text-cyan-400">{progress}%</div>
-                  {eta && isRunning && (
-                    <div className="flex items-center gap-1.5 text-[10px] text-gray-500 font-bold uppercase tracking-widest animate-pulse">
-                      <FiClock className="text-cyan-500" /> {eta}
+                  {isRunning && (
+                    <div className="flex items-center gap-2 text-sm font-black text-cyan-400 bg-cyan-400/10 px-4 py-2 rounded-2xl border border-cyan-500/20 shadow-[0_0_15px_rgba(6,182,212,0.1)] animate-pulse mt-2">
+                      <FiClock className="text-lg" /> 
+                      <span className="tracking-tighter">{eta || "Sincronizando reloj..."}</span>
                     </div>
                   )}
                 </div>

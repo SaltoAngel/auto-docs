@@ -38,23 +38,32 @@ app.add_middleware(
 
 # --- UTILIDADES ---
 def open_folder_picker():
-    """Abre el selector de carpetas nativo."""
+    """Abre el selector de carpetas de forma segura y forzada al frente."""
     try:
         root = Tk()
+        # Forzar que la ventana se registre en el sistema antes de ocultarla
+        root.attributes('-topmost', True)
         root.withdraw()
-        root.attributes("-topmost", True)
-        folder_path = filedialog.askdirectory(title="Selecciona la carpeta de tu proyecto Laravel")
+        root.update()
+        root.deiconify()
+        root.lift()
+        root.focus_force()
+        root.withdraw()
+        
+        folder_selected = filedialog.askdirectory(title="Selecciona el proyecto Laravel")
+        
         root.destroy()
-        return folder_path
+        return folder_selected
     except Exception as e:
-        print(f"❌ Error en selector de carpetas: {e}")
+        print(f"❌ Error en selector: {e}")
         return ""
 
 # --- ENDPOINTS ---
 
 @app.get("/select-folder")
 async def select_folder():
-    path = open_folder_picker()
+    # Ejecutar en un hilo separado para no bloquear el servidor FastAPI
+    path = await asyncio.to_thread(open_folder_picker)
     print(f"📂 Carpeta seleccionada: {path}")
     return {"path": path}
 
@@ -130,6 +139,8 @@ async def audit(request: Request, path: str, model: str, format: str, api_key: s
                     break
                 yield {"data": json.dumps(update)}
                 await asyncio.sleep(0.01)
+        except GeneratorExit:
+            print("👋 Generador cerrado por el cliente.")
         except Exception as e:
             yield {"data": json.dumps({"error": str(e)})}
     return EventSourceResponse(event_generator())
