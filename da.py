@@ -146,8 +146,9 @@ def modo_interactivo():
     
     return path, model, format
 
-def generar_doc_yield(path, modelo_alias, formato='md', provider='gemini', api_key=None, template=None):
-    """Versión generador con Análisis Global y ETA."""
+def generar_doc_yield(path, modelo_alias, formato='md', provider='gemini', api_key=None, template=None, custom_prompt=None):
+    """Versión generador con Análisis Global, ETA y Prompt Personalizado."""
+    # ... (rest of the initial setup remains the same)
     start_time = time.time()
     nombre_proyecto = os.path.basename(os.path.abspath(path))
     contexto_composer = obtener_contexto_composer(path)
@@ -250,7 +251,13 @@ def generar_doc_yield(path, modelo_alias, formato='md', provider='gemini', api_k
                     img_path = f"temp_block_{idx}_{num_bloque}.png"
                     renderizar_codigo_a_imagen(bloque_codigo, rel_path, img_path)
                 
-                # 2. Preparar Prompt para este bloque específico
+                # 2. Preparar Prompt (Personalizado o Estándar)
+                if custom_prompt:
+                    prompt = custom_prompt.replace("{{PROJECT}}", nombre_proyecto)\
+                                          .replace("{{FILE}}", rel_path)\
+                                          .replace("{{RANGE}}", f"{i+1}-{i+len(lineas[i:i+100])}")\
+                                          .replace("{{CODE}}", bloque_codigo)
+                else:
                     prompt = f"""
                     Actúa como Arquitecto de Software Senior y Revisor de Código.
                     Proyecto: {nombre_proyecto}

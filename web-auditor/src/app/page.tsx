@@ -3,7 +3,8 @@
 import { useState, useEffect, useRef } from "react";
 import { 
   FiFolder, FiCpu, FiFileText, FiPlay, FiCheckCircle, 
-  FiAlertCircle, FiDownload, FiActivity, FiLock, FiSearch, FiBox, FiDollarSign, FiSquare, FiClock
+  FiAlertCircle, FiDownload, FiActivity, FiLock, FiSearch, FiBox, FiDollarSign, FiSquare, FiClock,
+  FiSettings, FiChevronDown, FiChevronUp
 } from "react-icons/fi";
 
 export default function AuditorDashboard() {
@@ -16,6 +17,29 @@ export default function AuditorDashboard() {
   const [format, setFormat] = useState("md");
   const [availableTemplates, setAvailableTemplates] = useState<{id: string, name: string, preview: string | null}[]>([]);
   const [selectedTemplate, setSelectedTemplate] = useState<string>("");
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [customPrompt, setCustomPrompt] = useState(`Actúa como Arquitecto de Software Senior y Revisor de Código.
+Proyecto: {{PROJECT}}
+Archivo: {{FILE}}
+Rango de líneas: {{RANGE}}
+
+TAREA:
+Realiza una explicación técnica exhaustiva "línea por línea" del código proporcionado. 
+Debes agrupar las líneas por bloques lógicos (ej: una función, un ciclo, una validación) pero sin saltarte ninguna línea.
+
+ESTRUCTURA DE RESPUESTA REQUERIDA:
+Para cada bloque lógico, utiliza el siguiente formato:
+- **[Líneas X - Y]**: [Nombre del componente/lógica]
+- **Propósito**: Explicación breve de qué intenta resolver este segmento.
+- **Análisis**: Explicación detallada de la lógica, mencionando variables clave y cómo interactúan.
+
+REGLAS CRÍTICAS:
+1. Si una función comienza en la línea 50 y termina en la 60, el bloque debe abarcar exactamente esas líneas y explicar la firma, el cuerpo y el retorno.
+2. Identifica patrones de diseño de Laravel (Inyección de dependencias, Eloquent, Middlewares, etc.) donde aparezcan.
+3. Sé técnico: habla de complejidad, tipos de datos y flujo de control.
+
+CÓDIGO CON NÚMEROS DE LÍNEA:
+{{CODE}}`);
   const [isRunning, setIsRunning] = useState(false);
   const [progress, setProgress] = useState(0);
   const [startTime, setStartTime] = useState<number | null>(null);
@@ -125,7 +149,7 @@ export default function AuditorDashboard() {
     setFinalFile(null);
     setStatus("Conectando con el motor...");
     
-    const url = `http://localhost:8000/audit?path=${encodeURIComponent(path)}&model=${model}&format=${format}&api_key=${encodeURIComponent(apiKey)}&provider=${provider}${selectedTemplate ? `&template=${encodeURIComponent(selectedTemplate)}` : ''}`;
+    const url = `http://localhost:8000/audit?path=${encodeURIComponent(path)}&model=${model}&format=${format}&api_key=${encodeURIComponent(apiKey)}&provider=${provider}${selectedTemplate ? `&template=${encodeURIComponent(selectedTemplate)}` : ''}&custom_prompt=${encodeURIComponent(customPrompt)}`;
     const eventSource = new EventSource(url);
     eventSourceRef.current = eventSource;
 
@@ -371,6 +395,37 @@ export default function AuditorDashboard() {
                     )}
                   </div>
                 )}
+
+                <div className="pt-2">
+                  <button 
+                    onClick={() => setShowAdvanced(!showAdvanced)}
+                    className="flex items-center justify-between w-full text-[10px] font-black text-gray-500 uppercase tracking-[0.2em] hover:text-gray-300 transition-colors py-2"
+                  >
+                    <span className="flex items-center gap-2"><FiSettings className="text-xs" /> Configuración Avanzada</span>
+                    {showAdvanced ? <FiChevronUp /> : <FiChevronDown />}
+                  </button>
+                  
+                  {showAdvanced && (
+                    <div className="mt-3 space-y-3 animate-in fade-in slide-in-from-top-2 duration-300">
+                      <div>
+                        <label className="text-[10px] font-bold text-gray-500 uppercase mb-2 block">Instrucciones de la IA (Prompt)</label>
+                        <textarea 
+                          value={customPrompt}
+                          onChange={(e) => setCustomPrompt(e.target.value)}
+                          className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-xs text-gray-300 font-mono h-48 focus:outline-none focus:border-purple-500/50 transition-all leading-relaxed"
+                          placeholder="Escribe tu prompt aquí..."
+                        />
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {['{{PROJECT}}', '{{FILE}}', '{{RANGE}}', '{{CODE}}'].map(tag => (
+                            <span key={tag} className="text-[9px] bg-white/5 border border-white/5 px-2 py-1 rounded text-gray-500 font-mono cursor-help hover:border-purple-500/30 transition-all" title="Se reemplazará automáticamente">
+                              {tag}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
 
                 <button 
                   onClick={isRunning ? stopAudit : startAudit}

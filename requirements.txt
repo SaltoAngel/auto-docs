@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+sse-starlette
+python-docx
+pygments
+pillow
+openai
+google-generativeai
+python-dotenv
+rich
+httpx
