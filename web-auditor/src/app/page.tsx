@@ -17,6 +17,13 @@ export default function AuditorDashboard() {
   const [format, setFormat] = useState("md");
   const [availableTemplates, setAvailableTemplates] = useState<{id: string, name: string, preview: string | null}[]>([]);
   const [selectedTemplate, setSelectedTemplate] = useState<string>("");
+  const [fontName, setFontName] = useState("Calibri");
+  const [fontSize, setFontSize] = useState(11);
+  const [blockSize, setBlockSize] = useState(100);
+  const [diffMode, setDiffMode] = useState(false);
+  const [summary, setSummary] = useState<any>(null);
+  const [files, setFiles] = useState<Map<string, {blocksTotal: number, blocksDone: number, status: string}>>(new Map());
+  const [totalLines, setTotalLines] = useState(0);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [customPrompt, setCustomPrompt] = useState(`Actúa como Arquitecto de Software Senior y Revisor de Código.
 Proyecto: {{PROJECT}}
@@ -62,9 +69,35 @@ CÓDIGO CON NÚMEROS DE LÍNEA:
     setStatus("Detenido");
   };
 
-  // Cargar datos al inicio
+  // Cargar config y API key al inicio
   useEffect(() => {
     fetchTemplates();
+    const savedConfig = localStorage.getItem('auditor_config');
+    if (savedConfig) {
+      try {
+        const config = JSON.parse(savedConfig);
+        if (config.provider) setProvider(config.provider);
+        if (config.path) setPath(config.path);
+        if (config.format) setFormat(config.format);
+        if (config.model) setModel(config.model);
+        if (config.selectedTemplate) setSelectedTemplate(config.selectedTemplate);
+        if (config.customPrompt) setCustomPrompt(config.customPrompt);
+        if (config.fontName) setFontName(config.fontName);
+        if (config.fontSize) setFontSize(config.fontSize);
+        if (config.blockSize) setBlockSize(config.blockSize);
+        if (config.diffMode !== undefined) setDiffMode(config.diffMode);
+      } catch (e) { console.error("Error loading config", e); }
+    }
+    const savedKey = localStorage.getItem(`${provider}_api_key`);
+    if (savedKey) {
+      setApiKey(savedKey);
+      fetchModels(savedKey, provider);
+      fetchKeyStatus(savedKey, provider);
+    }
+  }, []);
+
+  // Cuando cambia el proveedor, cargar su API key
+  useEffect(() => {
     const savedKey = localStorage.getItem(`${provider}_api_key`);
     if (savedKey) {
       setApiKey(savedKey);
@@ -76,6 +109,12 @@ CÓDIGO CON NÚMEROS DE LÍNEA:
       setKeyInfo(null);
     }
   }, [provider]);
+
+  // Auto-guardar config cuando cambien las settings
+  useEffect(() => {
+    const config = { path, format, model, provider, selectedTemplate, customPrompt, fontName, fontSize, blockSize, diffMode };
+    localStorage.setItem('auditor_config', JSON.stringify(config));
+  }, [path, format, model, provider, selectedTemplate, customPrompt, fontName, fontSize, blockSize, diffMode]);
 
   const fetchTemplates = async () => {
     try {
@@ -147,9 +186,12 @@ CÓDIGO CON NÚMEROS DE LÍNEA:
     setEta("");
     setLogs([]);
     setFinalFile(null);
+    setSummary(null);
+    setFiles(new Map());
+    setTotalLines(0);
     setStatus("Conectando con el motor...");
     
-    const url = `http://localhost:8000/audit?path=${encodeURIComponent(path)}&model=${model}&format=${format}&api_key=${encodeURIComponent(apiKey)}&provider=${provider}${selectedTemplate ? `&template=${encodeURIComponent(selectedTemplate)}` : ''}&custom_prompt=${encodeURIComponent(customPrompt)}`;
+    const url = `http://localhost:8000/audit?path=${encodeURIComponent(path)}&model=${model}&format=${format}&api_key=${encodeURIComponent(apiKey)}&provider=${provider}${selectedTemplate ? `&template=${encodeURIComponent(selectedTemplate)}` : ''}&custom_prompt=${encodeURIComponent(customPrompt)}&font_name=${encodeURIComponent(fontName)}&font_size=${fontSize}&block_size=${blockSize}&diff_mode=${diffMode}`;
     const eventSource = new EventSource(url);
     eventSourceRef.current = eventSource;
 
@@ -175,6 +217,21 @@ CÓDIGO CON NÚMEROS DE LÍNEA:
       if (data.total_bloques) {
         startTimeRef.current = Date.now();
       }
+
+      if (data.total_lineas) setTotalLines(data.total_lineas);
+
+      if (data.file && typeof data.file === 'object') {
+        setFiles(prev => {
+          const next = new Map(prev);
+          const f = next.get(data.file.name) || {blocksTotal: data.file.blocks_total || 0, blocksDone: 0, status: 'pending'};
+          if (data.file.blocks_total) f.blocksTotal = data.file.blocks_total;
+          if (data.file.blocks_done) f.blocksDone = data.file.blocks_done;
+          if (data.file.blocks_total && f.blocksDone >= f.blocksTotal) f.status = 'done';
+          else f.status = 'processing';
+          next.set(data.file.name, f);
+          return next;
+        });
+      }
       
       if (data.streaming && data.log) {
         setLogs(prev => {
@@ -188,11 +245,13 @@ CÓDIGO CON NÚMEROS DE LÍNEA:
           }
         });
       } else if (data.log) {
-        addLog(data.log);
+        const tokenSuffix = data.tokens ? ` [${data.tokens} tokens]` : '';
+        addLog(data.log + tokenSuffix);
       }
 
-      if (data.file) {
+      if (data.file && typeof data.file === 'string') {
         setFinalFile(data.file);
+        if (data.summary) setSummary(data.summary);
         setIsRunning(false);
         eventSource.close();
         eventSourceRef.current = null;
@@ -393,6 +452,39 @@ CÓDIGO CON NÚMEROS DE LÍNEA:
                         </div>
                       </div>
                     )}
+
+                    <div className="mt-4 p-4 bg-white/5 rounded-xl border border-white/10">
+                      <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-3 block">Tipografía del Documento</label>
+                      <div className="flex gap-3">
+                        <div className="flex-1">
+                          <select
+                            value={fontName}
+                            onChange={(e) => setFontName(e.target.value)}
+                            className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2.5 focus:outline-none focus:border-cyan-500/50 transition-all text-xs appearance-none cursor-pointer"
+                          >
+                            <option className="bg-[#0A0A0A]" value="Calibri">Calibri</option>
+                            <option className="bg-[#0A0A0A]" value="Arial">Arial</option>
+                            <option className="bg-[#0A0A0A]" value="Times New Roman">Times New Roman</option>
+                            <option className="bg-[#0A0A0A]" value="Verdana">Verdana</option>
+                            <option className="bg-[#0A0A0A]" value="Courier New">Courier New</option>
+                            <option className="bg-[#0A0A0A]" value="Georgia">Georgia</option>
+                            <option className="bg-[#0A0A0A]" value="Tahoma">Tahoma</option>
+                            <option className="bg-[#0A0A0A]" value="Segoe UI">Segoe UI</option>
+                          </select>
+                        </div>
+                        <div className="w-20">
+                          <input
+                            type="number"
+                            min={8}
+                            max={20}
+                            value={fontSize}
+                            onChange={(e) => setFontSize(Number(e.target.value))}
+                            className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2.5 focus:outline-none focus:border-cyan-500/50 transition-all text-xs text-center"
+                          />
+                        </div>
+                      </div>
+                      <p className="text-[9px] text-gray-500 mt-2">Fuente: {fontName} · Tamaño: {fontSize}pt</p>
+                    </div>
                   </div>
                 )}
 
@@ -423,6 +515,31 @@ CÓDIGO CON NÚMEROS DE LÍNEA:
                           ))}
                         </div>
                       </div>
+                      <div className="pt-3 border-t border-white/5">
+                        <label className="text-[10px] font-bold text-gray-500 uppercase mb-2 block">Líneas por Bloque</label>
+                        <div className="flex items-center gap-3">
+                          <input
+                            type="range"
+                            min={20}
+                            max={300}
+                            step={10}
+                            value={blockSize}
+                            onChange={(e) => setBlockSize(Number(e.target.value))}
+                            className="flex-1 accent-cyan-500"
+                          />
+                          <span className="text-xs font-mono text-cyan-400 w-12 text-right">{blockSize}</span>
+                        </div>
+                      </div>
+                      <div className="pt-3 border-t border-white/5 flex items-center justify-between">
+                        <label className="text-[10px] font-bold text-gray-500 uppercase">Modo Diff</label>
+                        <button
+                          onClick={() => setDiffMode(!diffMode)}
+                          className={`relative w-10 h-5 rounded-full transition-all ${diffMode ? 'bg-cyan-500' : 'bg-white/10'}`}
+                        >
+                          <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all ${diffMode ? 'left-5' : 'left-0.5'}`} />
+                        </button>
+                      </div>
+                      {diffMode && <p className="text-[9px] text-amber-400/60">Solo procesa archivos modificados desde la última auditoría</p>}
                     </div>
                   )}
                 </div>
@@ -441,11 +558,26 @@ CÓDIGO CON NÚMEROS DE LÍNEA:
             <div className="bg-white/5 border border-white/10 rounded-3xl p-6">
               <div className="flex items-center gap-3 mb-2">
                 <FiCpu className="text-purple-400" />
-                <span className="text-sm font-semibold">Estado de Cuota</span>
+                <span className="text-sm font-semibold">
+                  {provider === 'openrouter' ? 'Balance OpenRouter' : 'Cuota Gemini'}
+                </span>
               </div>
-              <p className="text-xs text-gray-500 leading-relaxed">
-                Usando Free Tier. Los lotes se procesan con pausas de seguridad para evitar límites de RPM.
-              </p>
+              {keyInfo && keyInfo.valid ? (
+                <div className="space-y-1">
+                  <p className="text-xs text-gray-400 leading-relaxed">
+                    {provider === 'openrouter'
+                      ? `Balance restante: $${typeof keyInfo.balance === 'number' ? keyInfo.balance.toFixed(4) : keyInfo.balance}`
+                      : 'No es posible consultar el uso restante de Gemini vía API. Podés verificar tu cuota en Google AI Studio.'}
+                  </p>
+                  {provider === 'openrouter' && keyInfo.is_free && (
+                    <p className="text-[10px] text-amber-400/70">Tier gratuito activo</p>
+                  )}
+                </div>
+              ) : (
+                <p className="text-xs text-gray-500 leading-relaxed">
+                  Ingresá una API Key válida para ver el estado de tu cuenta.
+                </p>
+              )}
             </div>
           </section>
 
@@ -476,19 +608,57 @@ CÓDIGO CON NÚMEROS DE LÍNEA:
                 />
               </div>
 
+              {totalLines > 0 && (
+                <p className="text-[10px] text-gray-500 mt-1">
+                  ~{totalLines.toLocaleString()} líneas en total
+                  {files.size > 0 && ` · ${files.size} archivos`}
+                </p>
+              )}
+
+              {/* File Progress List */}
+              {files.size > 0 && !finalFile && (
+                <div className="mt-6 max-h-36 overflow-y-auto space-y-1 custom-scrollbar">
+                  {Array.from(files.entries()).map(([name, f]) => (
+                    <div key={name} className="flex items-center gap-2 text-[10px]">
+                      <span className="w-3 text-center text-[8px]">
+                        {f.status === 'done' ? '✅' : f.status === 'skipped' ? '⏭️' : '🔄'}
+                      </span>
+                      <span className="flex-1 truncate text-gray-400">{name}</span>
+                      <div className="w-20 h-1.5 bg-white/5 rounded-full overflow-hidden flex-shrink-0">
+                        <div
+                          className={`h-full transition-all duration-300 ${f.status === 'done' ? 'bg-green-500' : 'bg-cyan-500'}`}
+                          style={{width: f.blocksTotal > 0 ? `${Math.min(100, (f.blocksDone/f.blocksTotal)*100)}%` : '0%'}}
+                        />
+                      </div>
+                      <span className="text-gray-500 w-12 text-right tabular-nums">{f.blocksDone}/{f.blocksTotal}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
               {finalFile && (
                 <div className="mt-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
-                  <div className="bg-green-500/10 border border-green-500/30 rounded-2xl p-4 flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                      <FiCheckCircle className="text-green-400 text-xl" />
-                      <div>
-                        <p className="text-sm font-bold text-white">Manual Generado</p>
-                        <p className="text-xs text-green-400/70">{finalFile}</p>
+                  <div className="bg-green-500/10 border border-green-500/30 rounded-2xl p-4">
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="flex items-center gap-3">
+                        <FiCheckCircle className="text-green-400 text-xl" />
+                        <div>
+                          <p className="text-sm font-bold text-white">Manual Generado</p>
+                          <p className="text-xs text-green-400/70">{finalFile}</p>
+                        </div>
                       </div>
+                      <button onClick={() => window.open(`http://localhost:8000/download?file=${encodeURIComponent(finalFile)}`, '_blank')} className="bg-green-500 hover:bg-green-600 text-black px-6 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2">
+                        <FiDownload /> Descargar
+                      </button>
                     </div>
-                    <button className="bg-green-500 hover:bg-green-600 text-black px-6 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2">
-                      <FiDownload /> Descargar
-                    </button>
+                    {summary && (
+                      <div className="flex gap-4 pt-3 border-t border-green-500/20 text-[11px]">
+                        <span className="text-gray-400">Archivos: <strong className="text-white">{summary.archivos}</strong></span>
+                        {summary.archivos_saltados > 0 && <span className="text-gray-400">Saltados: <strong className="text-amber-400">{summary.archivos_saltados}</strong></span>}
+                        <span className="text-gray-400">Bloques: <strong className="text-white">{summary.bloques}</strong></span>
+                        <span className="text-gray-400">Tiempo: <strong className="text-white">{summary.segundos > 60 ? `${Math.floor(summary.segundos / 60)}m ${summary.segundos % 60}s` : `${summary.segundos}s`}</strong></span>
+                      </div>
+                    )}
                   </div>
                 </div>
               )}

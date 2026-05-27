@@ -1,5 +1,5 @@
 docs_laravel
 venv
-.gitignore
 .env
-/*.png
+__pycache__/
+*.png

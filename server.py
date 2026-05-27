@@ -130,11 +130,11 @@ async def list_templates():
     return {"templates": templates}
 
 @app.get("/audit")
-async def audit(request: Request, path: str, model: str, format: str, api_key: str = Query(None), provider: str = "gemini", template: str = Query(None), custom_prompt: str = Query(None)):
+async def audit(request: Request, path: str, model: str, format: str, api_key: str = Query(None), provider: str = "gemini", template: str = Query(None), custom_prompt: str = Query(None), resume: bool = Query(True), font_name: str = Query("Calibri"), font_size: int = Query(11), block_size: int = Query(100), diff_mode: bool = Query(False)):
     async def event_generator():
         try:
             # Consumir el generador de da.py con el nuevo parámetro de prompt personalizado
-            for update in generar_doc_yield(path, model, format, provider=provider, api_key=api_key, template=template, custom_prompt=custom_prompt):
+            for update in generar_doc_yield(path, model, format, provider=provider, api_key=api_key, template=template, custom_prompt=custom_prompt, resume=resume, font_name=font_name, font_size=font_size, block_size=block_size, diff_mode=diff_mode):
                 if await request.is_disconnected():
                     break
                 yield {"data": json.dumps(update)}
@@ -144,6 +144,13 @@ async def audit(request: Request, path: str, model: str, format: str, api_key: s
         except Exception as e:
             yield {"data": json.dumps({"error": str(e)})}
     return EventSourceResponse(event_generator())
+
+@ app.get("/download")
+async def download_file(file: str = Query(...)):
+    abs_path = os.path.join(os.getcwd(), file) if not os.path.isabs(file) else file
+    if os.path.exists(abs_path):
+        return FileResponse(abs_path, filename=os.path.basename(abs_path))
+    return {"error": "Archivo no encontrado"}
 
 # --- SERVIDO DE ARCHIVOS ESTÁTICOS ---
 

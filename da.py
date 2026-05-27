@@ -3,6 +3,8 @@ import sys
 import time
 import argparse
 import json
+import tempfile
+from pathlib import Path
 import google.generativeai as genai
 from rich.console import Console
 from pygments import highlight
@@ -42,9 +44,12 @@ def append_to_docx(doc_obj, text):
         else:
             doc_obj.add_paragraph(linea)
 
-def generar_doc_yield(path, modelo_alias, formato='md', provider='gemini', api_key=None, template=None, custom_prompt=None, resume=True):
+def generar_doc_yield(path, modelo_alias, formato='md', provider='gemini', api_key=None, template=None, custom_prompt=None, resume=True, font_name="Calibri", font_size=11, block_size=100, diff_mode=False):
+    if not os.path.exists(path) or not os.path.isdir(path):
+        yield {"error": f"La ruta '{path}' no existe o no es un directorio", "fatal": True}
+        return
     start_time = time.time()
-    nombre_proyecto = os.path.basename(os.path.abspath(path))
+    nombre_proyecto = Path(path).resolve().name
     
     # 1. Escaneo Inicial
     archivos_totales = []
@@ -60,7 +65,7 @@ def generar_doc_yield(path, modelo_alias, formato='md', provider='gemini', api_k
                 if file.endswith('.min.js') or file in ignorar_files:
                     continue
                 
-                full_p = os.path.join(root, file)
+                full_p = Path(root) / file
                 rel_path = os.path.relpath(full_p, path)
                 
                 try:
@@ -72,26 +77,52 @@ def generar_doc_yield(path, modelo_alias, formato='md', provider='gemini', api_k
                         continue
                         
                     archivos_totales.append((rel_path, full_p))
-                except: continue
+                except Exception: continue
 
     total_bloques = 0
+    total_lineas = 0
     for _, full_p in archivos_totales:
         try:
             with open(full_p, "r", encoding="utf-8", errors="ignore") as f:
-                total_bloques += (len(f.readlines()) // 100) + 1
-        except: continue
+                nlines = len(f.readlines())
+                total_bloques += (nlines // block_size) + 1
+                total_lineas += nlines
+        except Exception: continue
 
-    yield {"status": "Iniciando...", "progress": 5, "total_bloques": total_bloques}
-    
+    yield {"status": "Iniciando...", "progress": 5, "total_bloques": total_bloques, "total_lineas": total_lineas}
+
+    # Modo diff: cargar manifest y filtrar archivos sin cambios
+    manifest_file = Path(path) / ".auditor_manifest.json"
+    manifest = {}
+    archivos_a_procesar = archivos_totales.copy()
+    if diff_mode and manifest_file.exists():
+        try:
+            with open(manifest_file, "r") as f:
+                manifest = json.load(f)
+            filtrados = []
+            for rel_path, full_p in archivos_totales:
+                mtime_actual = os.path.getmtime(full_p)
+                if rel_path in manifest.get("files", {}) and manifest["files"][rel_path] == mtime_actual:
+                    continue
+                filtrados.append((rel_path, full_p))
+            saltados = len(archivos_totales) - len(filtrados)
+            archivos_a_procesar = filtrados
+            if saltados:
+                yield {"log": f"📋 Modo diff: {saltados} archivos sin cambios, {len(filtrados)} por procesar"}
+        except Exception:
+            yield {"log": "⚠️ Manifest corrupto, procesando todos los archivos"}
+
     # Checkpoint
-    checkpoint_file = os.path.join(path, ".auditor_state.json")
+    checkpoint_file = Path(path) / ".auditor_state.json"
     last_state = None
-    if resume and os.path.exists(checkpoint_file):
+    if resume and checkpoint_file.exists():
         try:
             with open(checkpoint_file, "r") as f:
                 last_state = json.load(f)
             yield {"log": f"🔄 Reanudando desde {last_state.get('idx_arch', 0)}"}
-        except: pass
+        except Exception:
+            yield {"log": "⚠️ Checkpoint corrupto, iniciando desde cero"}
+            last_state = None
 
     # Configurar Clientes
     if provider == 'openrouter':
@@ -101,107 +132,165 @@ def generar_doc_yield(path, modelo_alias, formato='md', provider='gemini', api_k
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel(MODELS.get(modelo_alias, modelo_alias))
 
-    os.makedirs("docs_laravel", exist_ok=True)
+    Path("docs_laravel").mkdir(parents=True, exist_ok=True)
     out_file = f"docs_laravel/auditoria_{nombre_proyecto.lower()}.{formato}"
     doc_obj = None
     if formato == 'docx':
         from docx import Document
-        doc_obj = Document(os.path.join("templates", template)) if template and os.path.exists(os.path.join("templates", template)) else Document()
+        doc_obj = Document(Path("templates") / template) if template and (Path("templates") / template).exists() else Document()
+        from docx.shared import Pt
+        style = doc_obj.styles['Normal']
+        style.font.name = font_name
+        style.font.size = Pt(font_size)
+        for level in range(1, 4):
+            style = doc_obj.styles[f'Heading {level}']
+            style.font.name = font_name
     
     bloques_procesados = 0
+    archivos_procesados = 0
 
     # 2. Bucle Principal
-    for idx_arch, (rel_path, full_path) in enumerate(archivos_totales):
+    for idx_arch, (rel_path, full_path) in enumerate(archivos_a_procesar):
         if last_state and idx_arch < last_state.get('idx_arch', 0):
-            # Contar bloques de archivos saltados para el progreso
             try:
                 with open(full_path, "r", encoding="utf-8", errors="ignore") as f:
-                    bloques_procesados += (len(f.readlines()) // 100) + 1
-            except: pass
+                    bloques_procesados += (len(f.readlines()) // block_size) + 1
+            except Exception: pass
             continue
-            
-        yield {"log": f"📖 Analizando {rel_path}..."}
-        
+
+        # Calcular bloques totales de este archivo
+        try:
+            with open(full_path, "r", encoding="utf-8", errors="ignore") as f:
+                lineas_file = f.readlines()
+            total_file_blocks = (len(lineas_file) // block_size) + 1
+        except Exception:
+            continue
+
+        yield {
+            "log": f"📖 Analizando {rel_path}...",
+            "file": {"name": rel_path, "blocks_total": total_file_blocks, "blocks_done": 0, "total_files": len(archivos_a_procesar), "file_index": idx_arch}
+        }
+
         try:
             with open(full_path, "r", encoding="utf-8", errors="ignore") as f:
                 lineas = f.readlines()
-        except: continue
+        except Exception: continue
 
-        for i in range(0, len(lineas), 100):
+        for i in range(0, len(lineas), block_size):
             if last_state and idx_arch == last_state.get('idx_arch', 0) and i <= last_state.get('block_idx', -1):
                 bloques_procesados += 1
                 continue
 
-            bloque_codigo = "".join(lineas[i:i+100])
-            num_bloque = (i // 100) + 1
+            bloque_codigo = "".join(lineas[i:i+block_size])
+            num_bloque = (i // block_size) + 1
             bloques_procesados += 1
             
             # 📸 CAPTURA DE CÓDIGO (Solo para DOCX)
             img_path = None
             if formato == 'docx':
-                img_path = f"temp_{idx_arch}_{num_bloque}.png"
+                img_path = Path(tempfile.gettempdir()) / f"audit_{idx_arch}_{num_bloque}.png"
                 renderizar_codigo_a_imagen(bloque_codigo, rel_path, img_path)
 
-            # Reintentos
-            intentos = 0
-            exito = False
-            texto_explicacion = ""
-            while intentos < 3 and not exito:
-                try:
-                    p = custom_prompt.replace("{{CODE}}", bloque_codigo).replace("{{PROJECT}}", nombre_proyecto).replace("{{FILE}}", rel_path).replace("{{RANGE}}", f"{i+1}-{i+len(lineas[i:i+100])}") if custom_prompt else f"Analiza: {bloque_codigo}"
-                    
-                    if provider == 'openrouter':
-                        res = client.chat.completions.create(
-                            model=modelo_alias, 
-                            messages=[{"role": "user", "content": p}],
-                            timeout=60 # Límite de 60 segundos por bloque
-                        )
-                        if res and res.choices and len(res.choices) > 0:
-                            texto_explicacion = res.choices[0].message.content or "Sin respuesta del modelo."
-                            exito = True
+            try:
+                intentos = 0
+                exito = False
+                texto_explicacion = ""
+                tokens_usados = None
+                while intentos < 3 and not exito:
+                    try:
+                        p = custom_prompt.replace("{{CODE}}", bloque_codigo).replace("{{PROJECT}}", nombre_proyecto).replace("{{FILE}}", rel_path).replace("{{RANGE}}", f"{i+1}-{i+len(lineas[i:i+block_size])}") if custom_prompt else f"Analiza: {bloque_codigo}"
+                        
+                        if provider == 'openrouter':
+                            res = client.chat.completions.create(
+                                model=modelo_alias, 
+                                messages=[{"role": "user", "content": p}],
+                                timeout=60
+                            )
+                            if res and res.choices and len(res.choices) > 0:
+                                texto_explicacion = res.choices[0].message.content or "Sin respuesta del modelo."
+                                exito = True
+                                try:
+                                    if res.usage:
+                                        tokens_usados = res.usage.total_tokens
+                                except: pass
+                            else:
+                                raise Exception("OpenRouter devolvió una respuesta vacía.")
                         else:
-                            raise Exception("OpenRouter devolvió una respuesta vacía.")
-                    else:
-                        res = model.generate_content(p)
-                        if res and res.text:
-                            texto_explicacion = res.text
-                            exito = True
-                        else:
-                            raise Exception("Gemini devolvió una respuesta vacía.")
-                            
-                except (KeyboardInterrupt, GeneratorExit):
-                    raise
-                except Exception as e:
-                    intentos += 1
-                    yield {"log": f"⚠️ Intento {intentos}/3: {str(e)}"}
-                    time.sleep(5 * intentos) # Espera un poco más entre reintentos
+                            res = model.generate_content(p)
+                            if res and res.text:
+                                texto_explicacion = res.text
+                                exito = True
+                                try:
+                                    if hasattr(res, 'usage_metadata') and res.usage_metadata:
+                                        tokens_usados = res.usage_metadata.total_token_count or 0
+                                except: pass
+                            else:
+                                raise Exception("Gemini devolvió una respuesta vacía.")
+                                
+                    except Exception as e:
+                        intentos += 1
+                        yield {"log": f"⚠️ Intento {intentos}/3: {str(e)}", "tokens": tokens_usados}
+                        time.sleep(5 * intentos)
 
-            if not exito:
-                yield {"error": "Error fatal. Reintenta más tarde.", "fatal": True}
-                return
+                if not exito:
+                    yield {"error": "Error fatal. Reintenta más tarde.", "fatal": True}
+                    return
 
-            # Guardar
-            if formato == 'docx':
-                from docx.shared import Inches
-                doc_obj.add_heading(f"Archivo: {rel_path} (Bloque {num_bloque})", level=2)
-                if img_path and os.path.exists(img_path):
-                    doc_obj.add_picture(img_path, width=Inches(6))
-                    os.remove(img_path)
-                append_to_docx(doc_obj, texto_explicacion)
-                doc_obj.save(out_file)
-            else:
-                with open(out_file, "a", encoding="utf-8") as f:
-                    f.write(f"## {rel_path} - Bloque {num_bloque}\n\n{texto_explicacion}\n\n")
+                # Guardar
+                if formato == 'docx':
+                    from docx.shared import Inches
+                    doc_obj.add_heading(f"Archivo: {rel_path} (Bloque {num_bloque})", level=2)
+                    if img_path and img_path.exists():
+                        doc_obj.add_picture(str(img_path), width=Inches(6))
+                    append_to_docx(doc_obj, texto_explicacion)
+                    doc_obj.save(out_file)
+                else:
+                    with open(out_file, "a", encoding="utf-8") as f:
+                        f.write(f"## {rel_path} - Bloque {num_bloque}\n\n{texto_explicacion}\n\n")
 
-            # Checkpoint
-            with open(checkpoint_file, "w") as f:
-                json.dump({"idx_arch": idx_arch, "block_idx": i}, f)
-            
-            yield {"progress": int(10 + (bloques_procesados/total_bloques)*88), "log": f"✅ {rel_path} B{num_bloque} OK"}
+                # Checkpoint
+                with open(checkpoint_file, "w") as f:
+                    json.dump({"idx_arch": idx_arch, "block_idx": i}, f)
+                
+                yield {
+                    "progress": int(10 + (bloques_procesados/total_bloques)*88),
+                    "log": f"✅ {rel_path} B{num_bloque} OK",
+                    "file": {"name": rel_path, "blocks_done": num_bloque},
+                    "tokens": tokens_usados
+                }
+            finally:
+                if img_path and img_path.exists():
+                    img_path.unlink()
+        
+        archivos_procesados += 1
 
     # Limpiar checkpoint al finalizar
-    if os.path.exists(checkpoint_file): os.remove(checkpoint_file)
-    yield {"status": "Completado", "progress": 100, "file": out_file}
+    if checkpoint_file.exists(): checkpoint_file.unlink()
+
+    # Guardar manifest para modo diff
+    if diff_mode:
+        nuevo_manifest = {"files": {}}
+        for rel_path, full_p in archivos_totales:
+            try:
+                nuevo_manifest["files"][rel_path] = os.path.getmtime(full_p)
+            except: pass
+        with open(manifest_file, "w") as f:
+            json.dump(nuevo_manifest, f)
+
+    archivos_saltados = len(archivos_totales) - len(archivos_a_procesar)
+    tiempo_total = int(time.time() - start_time)
+    yield {
+        "status": "Completado",
+        "progress": 100,
+        "file": out_file,
+        "summary": {
+            "archivos": archivos_procesados,
+            "archivos_totales": len(archivos_totales),
+            "archivos_saltados": archivos_saltados,
+            "bloques": bloques_procesados,
+            "segundos": tiempo_total
+        }
+    }
 
 def generar_doc_proyecto(path, modelo_alias, formato='md', provider='gemini', api_key=None):
     for update in generar_doc_yield(path, modelo_alias, formato, provider=provider, api_key=api_key):
