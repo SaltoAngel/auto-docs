@@ -145,7 +145,7 @@ async def audit(request: Request, path: str, model: str, format: str, api_key: s
             yield {"data": json.dumps({"error": str(e)})}
     return EventSourceResponse(event_generator())
 
-@ app.get("/download")
+@app.get("/download")
 async def download_file(file: str = Query(...)):
     abs_path = os.path.join(os.getcwd(), file) if not os.path.isabs(file) else file
     if os.path.exists(abs_path):

@@ -149,6 +149,11 @@ def generar_doc_yield(path, modelo_alias, formato='md', provider='gemini', api_k
     bloques_procesados = 0
     archivos_procesados = 0
 
+    # Limpiar output si es una corrida fresh (no resume)
+    if not last_state and formato != 'docx':
+        with open(out_file, "w", encoding="utf-8") as f:
+            pass
+
     # 2. Bucle Principal
     for idx_arch, (rel_path, full_path) in enumerate(archivos_a_procesar):
         if last_state and idx_arch < last_state.get('idx_arch', 0):
@@ -230,7 +235,7 @@ def generar_doc_yield(path, modelo_alias, formato='md', provider='gemini', api_k
                     except Exception as e:
                         intentos += 1
                         yield {"log": f"⚠️ Intento {intentos}/3: {str(e)}", "tokens": tokens_usados}
-                        time.sleep(5 * intentos)
+                        time.sleep(2 ** intentos)
 
                 if not exito:
                     yield {"error": "Error fatal. Reintenta más tarde.", "fatal": True}
