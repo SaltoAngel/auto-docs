@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from "react";
 import { 
   FiFolder, FiCpu, FiFileText, FiPlay, FiCheckCircle, 
   FiAlertCircle, FiDownload, FiActivity, FiLock, FiSearch, FiBox, FiDollarSign, FiSquare, FiClock,
-  FiSettings, FiChevronDown, FiChevronUp
+  FiSettings, FiChevronDown, FiChevronUp, FiStar, FiCode, FiX, FiEye, FiEyeOff, FiFile, FiChevronRight
 } from "react-icons/fi";
 
 export default function AuditorDashboard() {
@@ -13,7 +13,7 @@ export default function AuditorDashboard() {
   const [provider, setProvider] = useState("gemini");
   const [model, setModel] = useState("gemini-1.5-flash");
   const [availableModels, setAvailableModels] = useState<{id: string, label: string}[]>([]);
-  const [keyInfo, setKeyInfo] = useState<{label: string, balance: any, valid: boolean, error?: string} | null>(null);
+  const [keyInfo, setKeyInfo] = useState<{label: string, balance: any, valid: boolean, error?: string, is_free?: boolean, isFree?: boolean} | null>(null);
   const [format, setFormat] = useState("md");
   const [availableTemplates, setAvailableTemplates] = useState<{id: string, name: string, preview: string | null}[]>([]);
   const [selectedTemplate, setSelectedTemplate] = useState<string>("");
@@ -21,10 +21,23 @@ export default function AuditorDashboard() {
   const [fontSize, setFontSize] = useState(11);
   const [blockSize, setBlockSize] = useState(100);
   const [diffMode, setDiffMode] = useState(false);
+  const [structureOnly, setStructureOnly] = useState(false);
+  const [codeTheme, setCodeTheme] = useState("monokai");
+  const [excludePatterns, setExcludePatterns] = useState("");
+  const [favoriteModels, setFavoriteModels] = useState<string[]>([]);
+  const [liveContent, setLiveContent] = useState("");
+  const [showLivePreview, setShowLivePreview] = useState(false);
+  const [sessionId, setSessionId] = useState<string | null>(null);
   const [summary, setSummary] = useState<any>(null);
   const [files, setFiles] = useState<Map<string, {blocksTotal: number, blocksDone: number, status: string}>>(new Map());
   const [totalLines, setTotalLines] = useState(0);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [showFileBrowser, setShowFileBrowser] = useState(false);
+  const [projectFiles, setProjectFiles] = useState<{path: string, size: number}[]>([]);
+  const [fileBrowserLoading, setFileBrowserLoading] = useState(false);
+  const [fileBrowserTree, setFileBrowserTree] = useState<any>(null);
+  const [excludeDirFilter, setExcludeDirFilter] = useState("");
+  const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
   const [customPrompt, setCustomPrompt] = useState(`Actúa como Arquitecto de Software Senior y Revisor de Código.
 Proyecto: {{PROJECT}}
 Archivo: {{FILE}}
@@ -60,11 +73,15 @@ CÓDIGO CON NÚMEROS DE LÍNEA:
   // ... (states and other code)
 
   const stopAudit = () => {
+    if (sessionId) {
+      fetch(`http://localhost:8000/cancel-audit?session_id=${encodeURIComponent(sessionId)}`).catch(() => {});
+    }
     if (eventSourceRef.current) {
       eventSourceRef.current.close();
       eventSourceRef.current = null;
     }
     setIsRunning(false);
+    setSessionId(null);
     addLog("⚠️ Auditoría detenida por el usuario.");
     setStatus("Detenido");
   };
@@ -86,6 +103,10 @@ CÓDIGO CON NÚMEROS DE LÍNEA:
         if (config.fontSize) setFontSize(config.fontSize);
         if (config.blockSize) setBlockSize(config.blockSize);
         if (config.diffMode !== undefined) setDiffMode(config.diffMode);
+        if (config.structureOnly !== undefined) setStructureOnly(config.structureOnly);
+        if (config.favoriteModels) setFavoriteModels(config.favoriteModels);
+        if (config.codeTheme) setCodeTheme(config.codeTheme);
+        if (config.excludePatterns !== undefined) setExcludePatterns(config.excludePatterns);
       } catch (e) { console.error("Error loading config", e); }
     }
     const savedKey = localStorage.getItem(`${provider}_api_key`);
@@ -112,9 +133,14 @@ CÓDIGO CON NÚMEROS DE LÍNEA:
 
   // Auto-guardar config cuando cambien las settings
   useEffect(() => {
-    const config = { path, format, model, provider, selectedTemplate, customPrompt, fontName, fontSize, blockSize, diffMode };
+    const config = { path, format, model, provider, selectedTemplate, customPrompt, fontName, fontSize, blockSize, diffMode, structureOnly, codeTheme, excludePatterns, favoriteModels };
     localStorage.setItem('auditor_config', JSON.stringify(config));
-  }, [path, format, model, provider, selectedTemplate, customPrompt, fontName, fontSize, blockSize, diffMode]);
+  }, [path, format, model, provider, selectedTemplate, customPrompt, fontName, fontSize, blockSize, diffMode, structureOnly, codeTheme, excludePatterns, favoriteModels]);
+
+  // Auto-scroll del panel de logs
+  useEffect(() => {
+    logEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [logs]);
 
   const fetchTemplates = async () => {
     try {
@@ -177,6 +203,58 @@ CÓDIGO CON NÚMEROS DE LÍNEA:
     setLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] ${msg}`]);
   };
 
+  const openFileBrowser = async () => {
+    if (!path) return alert("Primero ingresa una ruta de proyecto");
+    setFileBrowserLoading(true);
+    setShowFileBrowser(true);
+    try {
+      const res = await fetch(`http://localhost:8000/project-files?path=${encodeURIComponent(path)}`);
+      const data = await res.json();
+      if (data.error) { alert(data.error); setShowFileBrowser(false); return; }
+      setProjectFiles(data.files || []);
+      setFileBrowserTree(data.tree || {});
+    } catch (err) {
+      console.error("Error fetching project files:", err);
+      alert("No se pudieron cargar los archivos del proyecto");
+      setShowFileBrowser(false);
+    } finally {
+      setFileBrowserLoading(false);
+    }
+  };
+
+  const toggleExclude = (pattern: string) => {
+    setExcludePatterns(prev => {
+      const items = prev.split(",").map(s => s.trim()).filter(Boolean);
+      const pLower = pattern.toLowerCase();
+      // Find any existing pattern that matches (exact or parent match)
+      const matching = items.filter(i => {
+        const iLower = i.toLowerCase();
+        return iLower === pLower || pLower.startsWith(iLower + "/") || iLower.startsWith(pLower + "/");
+      });
+      if (matching.length > 0) {
+        // Remove the most specific match (longest)
+        const toRemove = matching.sort((a, b) => b.length - a.length)[0];
+        return items.filter(i => i !== toRemove).join(", ");
+      }
+      return [...items, pattern].join(", ");
+    });
+  };
+
+  const removeExclude = (pattern: string) => {
+    setExcludePatterns(prev => {
+      const items = prev.split(",").map(s => s.trim()).filter(Boolean);
+      return items.filter(i => i.toLowerCase() !== pattern.toLowerCase()).join(", ");
+    });
+  };
+
+  const getExcludeList = () => excludePatterns.split(",").map(s => s.trim()).filter(Boolean);
+
+  const formatSize = (bytes: number) => {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  };
+
   const startAudit = async () => {
     if (!path) return alert("Por favor ingresa una ruta");
     
@@ -189,9 +267,13 @@ CÓDIGO CON NÚMEROS DE LÍNEA:
     setSummary(null);
     setFiles(new Map());
     setTotalLines(0);
+    setLiveContent("");
     setStatus("Conectando con el motor...");
     
-    const url = `http://localhost:8000/audit?path=${encodeURIComponent(path)}&model=${model}&format=${format}&api_key=${encodeURIComponent(apiKey)}&provider=${provider}${selectedTemplate ? `&template=${encodeURIComponent(selectedTemplate)}` : ''}&custom_prompt=${encodeURIComponent(customPrompt)}&font_name=${encodeURIComponent(fontName)}&font_size=${fontSize}&block_size=${blockSize}&diff_mode=${diffMode}`;
+    const sid = `audit_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    setSessionId(sid);
+    
+    const url = `http://localhost:8000/audit?path=${encodeURIComponent(path)}&model=${model}&format=${format}&api_key=${encodeURIComponent(apiKey)}&provider=${provider}${selectedTemplate ? `&template=${encodeURIComponent(selectedTemplate)}` : ''}&custom_prompt=${encodeURIComponent(customPrompt)}&font_name=${encodeURIComponent(fontName)}&font_size=${fontSize}&block_size=${blockSize}&diff_mode=${diffMode}&structure_only=${structureOnly}&code_theme=${codeTheme}&exclude_patterns=${encodeURIComponent(excludePatterns)}`;
     const eventSource = new EventSource(url);
     eventSourceRef.current = eventSource;
 
@@ -249,6 +331,10 @@ CÓDIGO CON NÚMEROS DE LÍNEA:
         addLog(data.log + tokenSuffix);
       }
 
+      if (data.live_content) {
+        setLiveContent(prev => prev + data.live_content);
+      }
+
       if (data.file && typeof data.file === 'string') {
         setFinalFile(data.file);
         if (data.summary) setSummary(data.summary);
@@ -259,9 +345,12 @@ CÓDIGO CON NÚMEROS DE LÍNEA:
       
       if (data.error) {
         addLog(`❌ ERROR: ${data.error}`);
-        setIsRunning(false);
-        eventSource.close();
-        eventSourceRef.current = null;
+        if (data.fatal) {
+          setIsRunning(false);
+          setSessionId(null);
+          eventSource.close();
+          eventSourceRef.current = null;
+        }
       }
     };
 
@@ -269,6 +358,7 @@ CÓDIGO CON NÚMEROS DE LÍNEA:
       console.error("EventSource failed:", err);
       addLog("❌ Error de conexión con el servidor.");
       setIsRunning(false);
+      setSessionId(null);
       eventSource.close();
       eventSourceRef.current = null;
     };
@@ -384,21 +474,51 @@ CÓDIGO CON NÚMEROS DE LÍNEA:
 
                 <div>
                   <label className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2 block">Modelo de IA</label>
-                  <select 
-                    value={model}
-                    onChange={(e) => setModel(e.target.value)}
-                    className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 focus:outline-none focus:border-blue-500/50 transition-all text-sm appearance-none cursor-pointer"
-                  >
-                    {availableModels.length === 0 ? (
-                      <option>Ingresa tu API Key para listar modelos...</option>
-                    ) : (
-                      availableModels.map((m) => (
-                        <option key={m.id} value={m.id} className="bg-[#0A0A0A]">
-                          {m.label}
-                        </option>
-                      ))
+                  <div className="relative group">
+                    <select 
+                      value={model}
+                      onChange={(e) => setModel(e.target.value)}
+                      className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 focus:outline-none focus:border-blue-500/50 transition-all text-sm appearance-none cursor-pointer"
+                    >
+                      {availableModels.length === 0 ? (
+                        <option>Ingresa tu API Key para listar modelos...</option>
+                      ) : (
+                        [...availableModels]
+                          .sort((a, b) => {
+                            const aFav = favoriteModels.includes(a.id) ? 0 : 1;
+                            const bFav = favoriteModels.includes(b.id) ? 0 : 1;
+                            return aFav - bFav || a.label.localeCompare(b.label);
+                          })
+                          .map((m) => (
+                            <option key={m.id} value={m.id} className="bg-[#0A0A0A]">
+                              {favoriteModels.includes(m.id) ? '★ ' : '  '}{m.label}
+                            </option>
+                          ))
+                      )}
+                    </select>
+                    {availableModels.length > 0 && (
+                      <button
+                        onClick={() => {
+                          setFavoriteModels(prev =>
+                            prev.includes(model)
+                              ? prev.filter(id => id !== model)
+                              : [...prev, model]
+                          );
+                        }}
+                        className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 hover:bg-white/10 rounded-lg transition-colors"
+                        title={favoriteModels.includes(model) ? "Quitar de favoritos" : "Agregar a favoritos"}
+                      >
+                        <FiStar className={favoriteModels.includes(model) ? 'text-yellow-400 fill-yellow-400' : 'text-gray-500'} />
+                      </button>
                     )}
-                  </select>
+                  </div>
+                  {favoriteModels.length > 0 && (
+                    <div className="mt-1.5 flex flex-wrap gap-1">
+                      {favoriteModels.map(fid => (
+                        <span key={fid} className="text-[9px] bg-yellow-500/10 text-yellow-400/70 px-1.5 py-0.5 rounded font-mono truncate max-w-[140px]">{fid}</span>
+                      ))}
+                    </div>
+                  )}
                 </div>
 
                 <div>
@@ -410,6 +530,13 @@ CÓDIGO CON NÚMEROS DE LÍNEA:
                     >
                       <span className="text-sm font-bold">MD</span>
                       <span className="text-[10px]">Markdown</span>
+                    </button>
+                    <button 
+                      onClick={() => setFormat("pdf")}
+                      className={`flex-1 py-3 rounded-xl border transition-all flex flex-col items-center gap-1 ${format === 'pdf' ? 'bg-white/10 border-white/30 text-white' : 'bg-transparent border-white/5 text-gray-500 hover:border-white/20'}`}
+                    >
+                      <span className="text-sm font-bold">PDF</span>
+                      <span className="text-[10px]">Documento</span>
                     </button>
                     <button 
                       onClick={() => setFormat("docx")}
@@ -488,6 +615,29 @@ CÓDIGO CON NÚMEROS DE LÍNEA:
                   </div>
                 )}
 
+                <div className="pt-3 border-t border-white/5">
+                  <label className="text-[10px] font-bold text-gray-500 uppercase mb-2 block">Excluir Archivos/Carpetas</label>
+                  <button
+                    onClick={openFileBrowser}
+                    className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-xs text-gray-400 hover:text-white hover:border-cyan-500/50 transition-all flex items-center justify-center gap-2"
+                  >
+                    <FiSearch /> Explorar y Seleccionar
+                  </button>
+                  {getExcludeList().length > 0 && (
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {getExcludeList().map(p => (
+                        <span key={p} className="inline-flex items-center gap-1 text-[10px] bg-red-500/10 text-red-400 border border-red-500/20 px-2 py-1 rounded-lg">
+                          <span className="max-w-[160px] truncate">{p}</span>
+                          <button onClick={() => removeExclude(p)} className="hover:text-red-300 transition-colors">
+                            <FiX size={10} />
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  <p className="text-[9px] text-gray-500 mt-1.5">Los archivos que coincidan con estas rutas serán ignorados en el análisis</p>
+                </div>
+
                 <div className="pt-2">
                   <button 
                     onClick={() => setShowAdvanced(!showAdvanced)}
@@ -516,6 +666,27 @@ CÓDIGO CON NÚMEROS DE LÍNEA:
                         </div>
                       </div>
                       <div className="pt-3 border-t border-white/5">
+                        <label className="text-[10px] font-bold text-gray-500 uppercase mb-2 block">Tema de Capturas de Código</label>
+                        <select
+                          value={codeTheme}
+                          onChange={(e) => setCodeTheme(e.target.value)}
+                          className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2.5 focus:outline-none focus:border-cyan-500/50 transition-all text-xs appearance-none cursor-pointer"
+                        >
+                          <option className="bg-[#0A0A0A]" value="monokai">Monokai</option>
+                          <option className="bg-[#0A0A0A]" value="dracula">Dracula</option>
+                          <option className="bg-[#0A0A0A]" value="one-dark">One Dark</option>
+                          <option className="bg-[#0A0A0A]" value="nord">Nord</option>
+                          <option className="bg-[#0A0A0A]" value="nord-darker">Nord Darker</option>
+                          <option className="bg-[#0A0A0A]" value="material">Material</option>
+                          <option className="bg-[#0A0A0A]" value="github-dark">GitHub Dark</option>
+                          <option className="bg-[#0A0A0A]" value="gruvbox-dark">Gruvbox Dark</option>
+                          <option className="bg-[#0A0A0A]" value="native">Native</option>
+                          <option className="bg-[#0A0A0A]" value="solarized-dark">Solarized Dark</option>
+                          <option className="bg-[#0A0A0A]" value="zenburn">Zenburn</option>
+                        </select>
+                        <p className="text-[9px] text-gray-500 mt-1.5">Tema visual para las capturas de código en DOCX</p>
+                      </div>
+                      <div className="pt-3 border-t border-white/5">
                         <label className="text-[10px] font-bold text-gray-500 uppercase mb-2 block">Líneas por Bloque</label>
                         <div className="flex items-center gap-3">
                           <input
@@ -540,8 +711,80 @@ CÓDIGO CON NÚMEROS DE LÍNEA:
                         </button>
                       </div>
                       {diffMode && <p className="text-[9px] text-amber-400/60">Solo procesa archivos modificados desde la última auditoría</p>}
+                      <div className="pt-3 border-t border-white/5 flex items-center justify-between">
+                        <label className="text-[10px] font-bold text-gray-500 uppercase">Solo Estructura</label>
+                        <button
+                          onClick={() => setStructureOnly(!structureOnly)}
+                          className={`relative w-10 h-5 rounded-full transition-all ${structureOnly ? 'bg-cyan-500' : 'bg-white/10'}`}
+                        >
+                          <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all ${structureOnly ? 'left-5' : 'left-0.5'}`} />
+                        </button>
+                      </div>
+                      {structureOnly && <p className="text-[9px] text-amber-400/60">Genera solo el árbol de estructura sin llamar a la IA</p>}
                     </div>
                   )}
+                </div>
+
+                <div className="flex gap-2 pt-2">
+                  <button
+                    onClick={() => {
+                      const config = {
+                        path, format, model, provider, apiKey,
+                        selectedTemplate, customPrompt, fontName, fontSize,
+                        blockSize, diffMode, structureOnly, codeTheme,
+                        excludePatterns, favoriteModels
+                      };
+                      const blob = new Blob([JSON.stringify(config, null, 2)], {type: 'application/json'});
+                      const url = URL.createObjectURL(blob);
+                      const a = document.createElement('a');
+                      a.href = url;
+                      a.download = `auditor-config-${new Date().toISOString().slice(0,10)}.json`;
+                      a.click();
+                      URL.revokeObjectURL(url);
+                    }}
+                    className="flex-1 bg-white/5 border border-white/10 rounded-xl py-3 text-[10px] font-bold text-gray-400 hover:text-white hover:border-cyan-500/50 transition-all"
+                  >
+                    Exportar Config
+                  </button>
+                  <button
+                    onClick={() => document.getElementById('import-config-input')?.click()}
+                    className="flex-1 bg-white/5 border border-white/10 rounded-xl py-3 text-[10px] font-bold text-gray-400 hover:text-white hover:border-cyan-500/50 transition-all"
+                  >
+                    Importar Config
+                  </button>
+                  <input
+                    id="import-config-input"
+                    type="file"
+                    accept=".json"
+                    className="hidden"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (!file) return;
+                      const reader = new FileReader();
+                      reader.onload = (ev) => {
+                        try {
+                          const cfg = JSON.parse(ev.target?.result as string);
+                          if (cfg.path) setPath(cfg.path);
+                          if (cfg.apiKey) { setApiKey(cfg.apiKey); localStorage.setItem(`${cfg.provider || provider}_api_key`, cfg.apiKey); }
+                          if (cfg.provider) setProvider(cfg.provider);
+                          if (cfg.model) setModel(cfg.model);
+                          if (cfg.format) setFormat(cfg.format);
+                          if (cfg.selectedTemplate) setSelectedTemplate(cfg.selectedTemplate);
+                          if (cfg.customPrompt) setCustomPrompt(cfg.customPrompt);
+                          if (cfg.fontName) setFontName(cfg.fontName);
+                          if (cfg.fontSize) setFontSize(cfg.fontSize);
+                          if (cfg.blockSize) setBlockSize(cfg.blockSize);
+                          if (cfg.diffMode !== undefined) setDiffMode(cfg.diffMode);
+                          if (cfg.structureOnly !== undefined) setStructureOnly(cfg.structureOnly);
+                          if (cfg.codeTheme) setCodeTheme(cfg.codeTheme);
+                          if (cfg.excludePatterns !== undefined) setExcludePatterns(cfg.excludePatterns);
+                          if (cfg.favoriteModels) setFavoriteModels(cfg.favoriteModels);
+                        } catch { alert("El archivo no tiene un formato válido"); }
+                      };
+                      reader.readAsText(file);
+                      e.target.value = '';
+                    }}
+                  />
                 </div>
 
                 <button 
@@ -664,34 +907,203 @@ CÓDIGO CON NÚMEROS DE LÍNEA:
               )}
             </div>
 
-            {/* Console Logs */}
-            <div className="bg-[#0A0A0A] border border-white/10 rounded-3xl overflow-hidden flex flex-col h-[400px]">
+            {/* Console Logs / Live Preview */}
+            <div className="bg-[#0A0A0A] border border-white/10 rounded-3xl overflow-hidden flex flex-col">
               <div className="bg-white/5 px-6 py-3 border-b border-white/10 flex items-center justify-between">
-                <span className="text-[10px] font-bold uppercase tracking-widest text-gray-500">Live Process Logs</span>
+                <div className="flex items-center gap-4">
+                  <button
+                    onClick={() => setShowLivePreview(false)}
+                    className={`text-[10px] font-bold uppercase tracking-widest transition-colors ${!showLivePreview ? 'text-cyan-400' : 'text-gray-500 hover:text-gray-300'}`}
+                  >
+                    <FiActivity className="inline mr-1.5" /> Logs
+                  </button>
+                  <button
+                    onClick={() => setShowLivePreview(true)}
+                    className={`text-[10px] font-bold uppercase tracking-widest transition-colors ${showLivePreview ? 'text-cyan-400' : 'text-gray-500 hover:text-gray-300'}`}
+                  >
+                    <FiCode className="inline mr-1.5" /> Vista Previa
+                  </button>
+                </div>
                 <div className="flex gap-1.5">
                   <div className="w-2 h-2 rounded-full bg-red-500/50" />
                   <div className="w-2 h-2 rounded-full bg-yellow-500/50" />
                   <div className="w-2 h-2 rounded-full bg-green-500/50" />
                 </div>
               </div>
-              <div className="p-6 overflow-y-auto flex-1 font-mono text-xs space-y-2 custom-scrollbar">
-                {logs.length === 0 && (
-                  <div className="text-white/10 h-full flex items-center justify-center italic">
-                    Esperando actividad...
-                  </div>
-                )}
-                {logs.map((log, i) => (
-                  <div key={i} className={`${log.includes('[IA]:') ? 'text-purple-400 font-medium italic' : 'text-gray-400'} animate-in fade-in slide-in-from-left-2 duration-300`}>
-                    <span className="text-cyan-500/50 mr-3">{i+1}</span>
-                    {log}
-                  </div>
-                ))}
-                <div ref={logEndRef} />
-              </div>
+              {showLivePreview ? (
+                <div className="p-6 overflow-y-auto flex-1 font-mono text-xs space-y-2 custom-scrollbar" style={{ height: '400px' }}>
+                  {!liveContent ? (
+                    <div className="text-white/10 h-full flex items-center justify-center italic">
+                      Esperando contenido...
+                    </div>
+                  ) : (
+                    <pre className="text-gray-300 whitespace-pre-wrap leading-relaxed">{liveContent}</pre>
+                  )}
+                </div>
+              ) : (
+                <div className="p-6 overflow-y-auto flex-1 font-mono text-xs space-y-2 custom-scrollbar" style={{ height: '400px' }}>
+                  {logs.length === 0 && (
+                    <div className="text-white/10 h-full flex items-center justify-center italic">
+                      Esperando actividad...
+                    </div>
+                  )}
+                  {logs.map((log, i) => (
+                    <div key={i} className={`${log.includes('[IA]:') ? 'text-purple-400 font-medium italic' : 'text-gray-400'} animate-in fade-in slide-in-from-left-2 duration-300`}>
+                      <span className="text-cyan-500/50 mr-3">{i+1}</span>
+                      {log}
+                    </div>
+                  ))}
+                  <div ref={logEndRef} />
+                </div>
+              )}
             </div>
           </section>
         </div>
       </div>
+
+      {/* Modal: Explorador de Archivos */}
+      {showFileBrowser && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm" onClick={() => setShowFileBrowser(false)}>
+          <div className="bg-[#0A0A0A] border border-white/10 rounded-3xl w-[90vw] max-w-2xl max-h-[80vh] flex flex-col overflow-hidden" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-6 py-4 border-b border-white/10">
+              <h3 className="text-sm font-bold flex items-center gap-2">
+                <FiFolder className="text-cyan-400" /> Archivos del Proyecto
+              </h3>
+              <button onClick={() => setShowFileBrowser(false)} className="p-2 hover:bg-white/10 rounded-lg transition-colors">
+                <FiX size={16} />
+              </button>
+            </div>
+            <div className="px-6 py-3 border-b border-white/5">
+              <input
+                type="text"
+                value={excludeDirFilter}
+                onChange={e => setExcludeDirFilter(e.target.value)}
+                placeholder="Filtrar archivos..."
+                className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-2 text-xs focus:outline-none focus:border-cyan-500/50"
+              />
+            </div>
+            <div className="flex-1 overflow-y-auto p-2 custom-scrollbar">
+              {fileBrowserLoading ? (
+                <div className="text-center text-gray-500 py-8 text-sm">Cargando archivos...</div>
+              ) : (
+                (() => {
+                  const filter = excludeDirFilter.toLowerCase();
+                  const excluded = getExcludeList();
+
+                  const isExcluded = (path: string) => excluded.some(e => {
+                    const pLower = path.toLowerCase();
+                    const eLower = e.toLowerCase();
+                    return pLower === eLower || pLower.startsWith(eLower + "/");
+                  });
+
+                  const toggleExpand = (path: string) => {
+                    setExpandedDirs(prev => {
+                      const next = new Set(prev);
+                      if (next.has(path)) next.delete(path);
+                      else next.add(path);
+                      return next;
+                    });
+                  };
+
+                  const renderTree = (node: any, path: string, depth: number) => {
+                    const entries = Object.entries(node).sort(([, a]: any, [, b]: any) => {
+                      if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
+                      return (a as any).path || '' > (b as any).path || '' ? 1 : -1;
+                    });
+
+                    return entries.flatMap(([name, data]: [string, any]) => {
+                      const fullPath = path ? `${path}/${name}` : name;
+                      const nodeExcluded = isExcluded(fullPath);
+                      const isExpanded = expandedDirs.has(fullPath);
+
+                      if (data.type === 'dir') {
+                        const childCount = Object.keys(data.children || {}).length;
+                        const hasFilterMatch = !filter || fullPath.toLowerCase().includes(filter);
+                        const hasChildMatch = !filter || Object.keys(data.children || {}).some(k =>
+                          `${fullPath}/${k}`.toLowerCase().includes(filter)
+                        );
+                        if (filter && !hasFilterMatch && !hasChildMatch) return [];
+                        const showChildren = isExpanded || (filter && hasChildMatch);
+
+                        return (
+                          <div key={fullPath}>
+                            <div
+                              className={`flex items-center gap-2 px-3 py-1.5 rounded-lg cursor-pointer text-xs transition-all group ${
+                                nodeExcluded
+                                  ? 'bg-red-500/10 text-red-400 border border-red-500/20'
+                                  : 'text-gray-400 hover:bg-white/5 border border-transparent'
+                              }`}
+                              style={{ paddingLeft: `${12 + depth * 16}px` }}
+                            >
+                              <button
+                                onClick={(e) => { e.stopPropagation(); toggleExpand(fullPath); }}
+                                className="shrink-0 p-0.5 hover:bg-white/10 rounded transition-transform"
+                              >
+                                <FiChevronRight size={10} className={`transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
+                              </button>
+                              <div
+                                onClick={() => toggleExclude(fullPath)}
+                                className="flex items-center gap-2 flex-1 min-w-0"
+                              >
+                                <FiFolder className={`shrink-0 text-[10px] ${nodeExcluded ? 'text-red-400' : 'text-cyan-400'}`} />
+                                <span className="truncate flex-1">{name}</span>
+                                <span className="shrink-0 text-[9px] text-gray-600">{childCount}</span>
+                              </div>
+                              <button
+                                onClick={(e) => { e.stopPropagation(); toggleExclude(fullPath); }}
+                                className="shrink-0 p-0.5 hover:bg-white/10 rounded"
+                              >
+                                {nodeExcluded ? <FiEyeOff size={10} className="text-red-400" /> : <FiEye size={10} className="text-gray-600 opacity-0 group-hover:opacity-100" />}
+                              </button>
+                            </div>
+                            {showChildren && renderTree(data.children || {}, fullPath, depth + 1)}
+                          </div>
+                        );
+                      }
+
+                      if (filter && !fullPath.toLowerCase().includes(filter)) return [];
+
+                      return (
+                        <div
+                          key={fullPath}
+                          onClick={() => toggleExclude(fullPath)}
+                          className={`flex items-center gap-2 px-3 py-1.5 rounded-lg cursor-pointer text-xs transition-all group ${
+                            nodeExcluded
+                              ? 'bg-red-500/10 text-red-400 border border-red-500/20'
+                              : 'text-gray-400 hover:bg-white/5 border border-transparent'
+                          }`}
+                          style={{ paddingLeft: `${12 + depth * 16}px` }}
+                        >
+                          <FiFile className="shrink-0 text-[10px] text-gray-500" />
+                          <span className="truncate flex-1">{name}</span>
+                          <span className="shrink-0 text-[9px] text-gray-600">{formatSize(data.size)}</span>
+                          <span className={`shrink-0 text-[9px] ${nodeExcluded ? 'text-red-400' : 'text-gray-600 opacity-0 group-hover:opacity-100'}`}>
+                            {nodeExcluded ? <FiEyeOff size={10} /> : <FiEye size={10} />}
+                          </span>
+                        </div>
+                      );
+                    });
+                  };
+
+                  const items = renderTree(fileBrowserTree, "", 0);
+                  return items.length === 0 ? (
+                    <div className="text-center text-gray-500 py-8 text-sm">No se encontraron archivos</div>
+                  ) : items;
+                })()
+              )}
+            </div>
+            <div className="px-6 py-3 border-t border-white/10 flex items-center justify-between">
+              <span className="text-[10px] text-gray-500">{projectFiles.length} archivos analizables</span>
+              <button
+                onClick={() => setShowFileBrowser(false)}
+                className="bg-white/10 hover:bg-white/20 text-xs font-bold px-4 py-2 rounded-xl transition-colors"
+              >
+                Cerrar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <style jsx global>{`
         .custom-scrollbar::-webkit-scrollbar {
