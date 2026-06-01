@@ -120,6 +120,7 @@ async def list_models(api_key: str = Query(...), provider: str = "gemini"):
             models.sort(key=lambda x: x['label'])
             return {"models": models}
     except Exception as e:
+        print(f"❌ Error al listar modelos: {e}")
         return {"error": str(e)}
 
 @app.get("/project-files")
