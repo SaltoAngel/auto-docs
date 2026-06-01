@@ -178,6 +178,9 @@ def generar_doc_yield(path, modelo_alias, formato='md', provider='gemini', api_k
             yield {"log": "⚠️ Checkpoint corrupto, iniciando desde cero"}
             last_state = None
 
+    Path("docs_laravel").mkdir(parents=True, exist_ok=True)
+    out_file = f"docs_laravel/auditoria_{nombre_proyecto.lower()}.{formato}"
+
     # Si no hay checkpoint pero existe el archivo de salida, escanearlo para reanudar
     if not last_state and resume and os.path.exists(out_file):
         try:
@@ -226,8 +229,6 @@ def generar_doc_yield(path, modelo_alias, formato='md', provider='gemini', api_k
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel(MODELS.get(modelo_alias, modelo_alias))
 
-    Path("docs_laravel").mkdir(parents=True, exist_ok=True)
-    out_file = f"docs_laravel/auditoria_{nombre_proyecto.lower()}.{formato}"
     doc_obj = None
     if formato == 'docx':
         from docx import Document
