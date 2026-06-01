@@ -128,7 +128,7 @@ async def list_project_files(path: str = Query(...)):
     try:
         if not os.path.exists(path):
             return {"error": "La ruta no existe"}
-        ignorar_dirs = {'vendor', 'node_modules', 'storage', 'public', 'tests', 'database', 'dist', 'build', '.git'}
+        ignorar_dirs = {'vendor', 'node_modules', 'storage', 'public', 'tests', 'dist', 'build', '.git'}
         ignorar_files = {'webpack.mix.js', 'tailwind.config.js', 'package-lock.json'}
         extensiones = ('.php', '.js', '.vue', '.ts', '.tsx', '.blade.php', '.css', '.scss', '.py', '.go', '.rb', '.java', '.rs', '.kt', '.swift')
         archivos = []
