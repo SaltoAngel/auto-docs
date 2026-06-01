@@ -19,10 +19,21 @@ MODELS = {
     "pro": "gemini-1.5-pro"
 }
 
+import platform
+
 def renderizar_codigo_a_imagen(codigo, filename, output_path, theme="monokai"):
     try:
-        lexer = get_lexer_by_name("php", stripall=True)
-        formatter = ImageFormatter(font_name="DejaVu Sans Mono", font_size=20, line_numbers=True, style=theme)
+        # Coloreado dinámico según la extensión del archivo
+        ext = filename.split('.')[-1].lower() if '.' in filename else 'text'
+        try:
+            lexer = get_lexer_by_name(ext, stripall=True)
+        except:
+            lexer = get_lexer_by_name("php", stripall=True) # Fallback a php
+            
+        # Fuente compatible con Windows y Linux/Mac
+        fuente = "Consolas" if platform.system() == "Windows" else "DejaVu Sans Mono"
+        
+        formatter = ImageFormatter(font_name=fuente, font_size=20, line_numbers=True, style=theme)
         with open(output_path, "wb") as f:
             f.write(highlight(codigo, lexer, formatter))
         return True
